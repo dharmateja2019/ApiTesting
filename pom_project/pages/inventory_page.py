@@ -1,10 +1,11 @@
 from playwright.sync_api import Page
+from core.base_page import BasePage
 
-class InventoryPage:
-    URL = "https://www.saucedemo.com/inventory.html"
+class InventoryPage(BasePage):
 
     def __init__(self, page: Page):
-        self.page = page
+        super().__init__(page)
+
         self.product_items = page.locator(".inventory_item")
         self.cart_icon     = page.locator(".shopping_cart_link")
         self.sort_dropdown = page.locator("[data-test='product-sort-container']")

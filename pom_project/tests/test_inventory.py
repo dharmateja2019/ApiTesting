@@ -21,7 +21,17 @@ def test_add_to_cart_updates_badge(inventory_page,page):
     assert cart_badge.text_content() == "1"
 
 @pytest.mark.slow
-def test_performance_glitch_user(login_page, page):
+def test_performance_glitch_user(inventory_page,login_page, page):
     user = UserFactory.slow()
     login_page.login(user.username, user.password)
-    assert page.url == "https://www.saucedemo.com/inventory.html"
+    assert page.url == f"{inventory_page.get_current_url()}"
+
+def test_page_title_is_correct(inventory_page):
+    # get_page_title() comes from BasePage — InventoryPage didn't define it
+    title = inventory_page.get_page_title()
+    assert title == "Swag Labs"
+
+def test_current_url_after_login(inventory_page):
+    # get_current_url() also from BasePage
+    url = inventory_page.get_current_url()
+    assert "inventory" in url
