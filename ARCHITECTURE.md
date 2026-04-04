@@ -1,223 +1,269 @@
-# Architecture Decisions — Why This Framework Was Built This Way
+# Architecture — QA Automation Framework
 
-This document explains the key architectural decisions in this test automation framework. Not just _what_ was used, but _why_ each decision was made and what problem it solves.
-
-## Framework at a Glance
-
-- 12 UI tests across 2 page objects, running in parallel in 19s inside Docker
-- API tests covering status codes, schema validation, and POST scenarios
-- K6 load tests mirroring functional API tests — with thresholds that fail CI on regression
-- Single command switches between dev, staging, and prod environments
-- Every failing test automatically captures a screenshot embedded in Allure report
-- Interactive Allure dashboard with feature grouping, severity filtering, and step breakdown
-- Fully containerised — identical environment on Mac, Windows, Ubuntu, and CI
+This document covers the framework structure, component relationships, execution flows, CI/CD pipeline design, and the reasoning behind every architectural decision.
 
 ---
 
-## 1. Why Playwright Over Selenium?
+## 1. Component view
+
+The framework is divided into four layers. Each layer has one responsibility and depends only on layers below it.
+
+```mermaid
+graph TD
+    subgraph CORE ["Core layer — shared across all teams"]
+        BP[base_page.py\nshared page behaviour]
+        CF[config.py\nenv variables]
+        CT[conftest.py\nfixtures]
+    end
+
+    subgraph PAGES ["Page layer — locators and actions only"]
+        LP[login_page.py\ninherits BasePage]
+        IP[inventory_page.py\ninherits BasePage]
+    end
+
+    subgraph DATA ["Test data layer — centralised factories"]
+        UF[user_factory.py]
+        PF[product_factory.py]
+    end
+
+    subgraph TESTS ["Test layer — assertions and scenarios"]
+        LT[login_test.py]
+        IT[test_inventory.py]
+        PT[test_api.py]
+        KT[api_load_test.js]
+    end
+
+    CORE --> PAGES
+    CORE --> DATA
+    PAGES --> TESTS
+    DATA --> TESTS
+```
+
+---
+
+## 2. CI/CD pipeline flow
+
+Three jobs run in parallel on every push and pull request.
+
+```mermaid
+flowchart TD
+    PUSH[git push / pull request] --> GHA[GitHub Actions triggered]
+
+    GHA --> API[api-tests job\nhttpx + pytest]
+    GHA --> UI[ui-tests job\nPlaywright + xdist + Allure]
+    GHA --> PERF[performance-tests job\nK6 + thresholds]
+
+    API --> AR[api-report.html\nuploaded as artifact]
+    UI --> UR[allure-report/\nuploaded as artifact]
+    PERF --> PR[pass / fail\nthreshold result]
+
+    AR --> STATUS[PR status updated]
+    UR --> STATUS
+    PR --> STATUS
+```
+
+---
+
+## 3. Test execution flow — single UI test
+
+What happens internally when one UI test runs.
+
+```mermaid
+flowchart TD
+    A[pytest collects tests] --> B[xdist distributes across workers]
+    B --> C[conftest fixtures run\nbrowser → page → inventory_page]
+    C --> D[UserFactory.standard\nbuilds user object]
+    D --> E[LoginPage.login\ncalls BasePage.navigate_to]
+    E --> F{test result}
+    F -->|pass| G[Allure step marked green]
+    F -->|fail| H[screenshot captured\nembedded in Allure report]
+```
+
+---
+
+## 4. Class inheritance — page layer
+
+```mermaid
+classDiagram
+    class BasePage {
+        +page: Page
+        +timeout: int
+        +wait_for_element(locator)
+        +navigate_to(url)
+        +take_screenshot(name)
+        +get_page_title()
+        +get_current_url()
+    }
+
+    class LoginPage {
+        +username_input
+        +password_input
+        +login_button
+        +error_message
+        +navigate()
+        +login(username, password)
+        +get_error_message()
+    }
+
+    class InventoryPage {
+        +product_items
+        +cart_icon
+        +sort_dropdown
+        +get_product_count()
+        +get_product_names()
+        +add_first_product_to_cart()
+        +go_to_cart()
+    }
+
+    BasePage <|-- LoginPage
+    BasePage <|-- InventoryPage
+```
+
+---
+
+## 5. Docker execution flow
+
+```mermaid
+flowchart LR
+    DF[Dockerfile\nPlaywright base image v1.58.0] --> IMG[docker build\nqa-automation image]
+    IMG --> RUN[docker run\ncontainer starts]
+    RUN --> PT[pytest runs\n4 workers parallel]
+    PT --> AR[allure-results/\nwritten inside container]
+    AR --> VOL[volume mount\nresults exported locally]
+    VOL --> AS[allure open\ndashboard opens]
+```
+
+---
+
+## 6. K6 load test flow
+
+```mermaid
+flowchart TD
+    START[k6 run script] --> RAMP[ramp up\n0 → 10 VUs over 10s]
+    RAMP --> SUSTAIN[sustain\n10 VUs for 20s]
+    SUSTAIN --> DOWN[ramp down\n10 → 0 VUs over 10s]
+    DOWN --> CHECK{thresholds met?}
+    CHECK -->|p95 under 400ms\nfailure rate under 1%| PASS[exit 0\nCI passes]
+    CHECK -->|threshold breached| FAIL[exit non-zero\nCI fails]
+```
+
+---
+
+## 7. Architectural decisions
+
+### Why Playwright over Selenium?
 
 Playwright eliminates browser driver management entirely. Selenium requires downloading and versioning ChromeDriver separately — when Chrome updates you get version mismatches and test failures from infrastructure, not code. Playwright bundles drivers, so all developers run the same version.
 
-Playwright also has built-in auto-waiting. Locators wait automatically for elements to be ready before clicking. Selenium requires manual waits and sleep calls scattered across test code, making tests slower and more fragile. Tests fail less often, and when they do it's usually a real problem, not a timing issue.
+Playwright also has built-in auto-waiting. Locators wait automatically for elements to be ready before clicking. Selenium requires manual waits and sleep calls scattered across test code, making tests slower and more fragile.
 
 ---
 
-## 2. Why Page Object Model?
+### Why Page Object Model?
 
-Without POM, locators scatter everywhere. If you have 15 login tests and the username field selector changes, you update 15 test files and risk missing one. One miss = one broken test that nobody knows about until CI later. With POM, LoginPage owns every login-related locator and action. One selector change = one file update, and all 15 tests automatically use the new selector.
+Without POM, locators scatter everywhere. If you have 15 login tests and the username field selector changes, you update 15 test files and risk missing one. One miss = one broken test that nobody knows about until CI later. With POM, `LoginPage` owns every login-related locator and action. One selector change = one file update.
 
-POM also makes tests readable. Instead of:
-
-```python
-page.locator("#user-name").fill("standard_user")
-page.locator("#password").fill("secret_sauce")
-page.locator("#login-button").click()
-```
-
-Tests say:
-
-```python
-login_page.login("standard_user", "secret_sauce")
-```
-
-The test reads like a business scenario, not HTML plumbing. New team members understand the test intent immediately.
+POM also makes tests readable. Instead of raw locators, tests say `login_page.login("standard_user", "secret_sauce")` — the test reads like a business scenario, not HTML plumbing.
 
 ---
 
-## 3. Why BasePage?
+### Why BasePage?
 
-Without BasePage, each page class duplicates the same code. Every page needs to wait for elements, navigate to URLs, capture screenshots, and check page state. With 5 page objects on a team, you have 5 different wait implementations. Another team builds 7 more pages with 7 different implementations. Waiting logic becomes inconsistent — some pages wait 5 seconds, some 30, some don't wait at all.
+Without `BasePage`, each page class duplicates the same code. Every page needs to wait for elements, navigate to URLs, and capture screenshots. With 5 page objects on a team, you have 5 different wait implementations. `BasePage` defines it once. Every page inherits it automatically. A fix in `BasePage` propagates instantly to all pages in the framework.
 
-BasePage defines waiting, navigation, screenshots, and page info once. Every page inherits it automatically. When you discover a hidden race condition and need to add retry logic to waiting, you fix it in BasePage and it applies instantly to all 12 pages in the framework. New pages written next month get the fixed logic without anyone remembering to add it manually.
-
-At scale with multiple teams, BasePage becomes the shared platform layer. Teams focus on page-specific logic. The core team maintains BasePage. A fix in BasePage propagates to every team's tests.
+At scale with multiple teams, `BasePage` becomes the shared platform layer. Teams focus on page-specific logic. The core team maintains `BasePage`.
 
 ---
 
-## 4. Why Factory Pattern for Test Data?
+### Why Factory pattern for test data?
 
-Without factories, credentials scatter across tests. Every login test hardcodes:
+Without factories, credentials scatter across tests. When the test environment password changes, you search for it in 23 test files, update 22, miss the 23rd, and the next day that test fails in CI. The team thinks it's a bug — it's actually a missed credential update.
 
-```python
-def test_login_valid():
-    page.locator("#user-name").fill("standard_user")
-    page.locator("#password").fill("secret_sauce")
-```
-
-Fast forward six months. Your test environment password changes to "new_secret_2026". You search for "secret_sauce" and find it in 23 test files. You update 22 of them. The 23rd? Missed it. Next day that test fails in CI and the team thinks it's a bug, not a credential change.
-
-With factories:
-
-```python
-user = UserFactory.standard()
-login_page.login(user.username, user.password)
-```
-
-Credentials live in one place. The password is "secret_sauce" exactly once, in `user_factory.py`. When it changes, one update fixes all 23 tests. Tests also declare intent — `UserFactory.locked()` tells you immediately this is the locked-user scenario, no reading through magic strings.
+With `UserFactory.standard()`, credentials live in one place. Tests declare intent — `UserFactory.locked()` tells you immediately this is the locked-user scenario, no reading through magic strings.
 
 ---
 
-## 5. Why Function Scope for Browser in Parallel Runs?
+### Why function scope for browser in parallel runs?
 
-Session scope means one browser object created once and reused for every test. This works fine running tests sequentially on one machine. It breaks with parallel execution.
-
-When you run `pytest -n 2`, pytest spawns two separate worker processes. Each worker is an independent Python instance. Session scope doesn't cross process boundaries reliably with xdist — each worker creates its own session, which creates unexpected complications.
-
-Function scope guarantees each test gets its own isolated browser regardless of worker count. Two tests run in parallel, each with their own browser. No sharing issues. No crashes. Parallel execution just works.
+Session scope means one browser object shared across tests in a worker. With xdist, multiple workers run as separate processes — session scope doesn't cross process boundaries reliably. With `-n 2` the suite fails. With function scope, each test gets its own browser — parallel-safe regardless of worker count.
 
 ---
 
-## 6. Why Parallel Execution?
+### Why parallel execution?
 
-Running 12 UI tests sequentially took 30 seconds. Running them with `-n 2` dropped to 15 seconds. Running with `-n auto` on a 16-core machine dropped to 13 seconds. In a real suite with 500 tests the difference is 35 minutes versus under 8 minutes.
+| Mode             | Workers | Time |
+| ---------------- | ------- | ---- |
+| Sequential       | 1       | ~30s |
+| `-n 2`           | 2       | ~15s |
+| `-n auto` local  | 16      | ~13s |
+| `-n auto` CI     | 4       | ~12s |
+| Docker `-n auto` | 4       | ~19s |
 
-In CI, feedback speed matters. A developer pushes code and waits for test results. 35 minutes is enough time to start another task, forget about the tests, then context-switch back. 8 minutes is long enough to grab coffee and check Slack.
-
----
-
-## 7. Why Two Separate CI Jobs for Functional Tests?
-
-Initially this looked like it could be one job running all tests. But separate jobs are better.
-
-Imagine a scenario: the UI test for the shopping cart has a flake. It fails once every 10 runs. The CI run fails because of the UI test. Looking at the results, you see:
-
-- API tests: ✅ all passed
-- UI tests: ❌ cart test failed
-
-With a single combined job, the entire job failed. Future commits might show "build is broken" even if nothing else failed. With separate jobs, both jobs report independently. Developers see "API tests passing, UI tests sometimes flaky" — much clearer picture of what needs attention.
-
-Also, dependencies are different. API tests need httpx. UI tests need Playwright. Combining them means both deps always install even if you only care about API tests that week. Separate jobs install only what they need.
+In a real suite with 500 tests the difference is 35 minutes vs under 8 minutes. Feedback speed directly affects developer flow.
 
 ---
 
-## 8. Why Environment Variables for BASE_URL?
+### Why two separate CI jobs for functional tests?
 
-Hardcoding URLs in test code requires code changes to switch environments. Want to test against staging? Change all `https://www.saucedemo.com` to `https://staging.saucedemo.com` across test files, commit, push. Mistakes happen.
+With a single combined job, a flaky UI test marks the entire build as broken — hiding passing API tests. With separate jobs, both report independently. Developers see "API tests passing, UI tests sometimes flaky" — a clear signal of what needs attention. Dependencies are also different — API tests need httpx, UI tests need Playwright. Separate jobs install only what they need.
 
-With `BASE_URL = os.getenv("BASE_URL", "https://www.saucedemo.com")`, the same test file works everywhere:
+---
 
-- Local development: defaults to public demo site
-- CI staging: GitHub Actions sets `BASE_URL=https://staging.example.com`
+### Why environment variables for BASE_URL?
+
+Hardcoding `https://www.saucedemo.com` in test code means switching to staging requires a code change and a commit. With `os.getenv("BASE_URL", "https://www.saucedemo.com")`:
+
+- Local: defaults to demo site
+- CI staging: `BASE_URL=https://staging.example.com`
 - Docker: `docker run -e BASE_URL=https://staging.example.com qa-automation`
-- Production smoke tests: another job sets the prod URL
+- Production smoke: another job sets the prod URL
 
 Same test code. No commits. Just environment variables.
 
 ---
 
-## 9. Why Allure Over pytest-html?
+### Why Allure over pytest-html?
 
-pytest-html produces a static HTML file — useful but flat. One page, no filtering, no trend history. Allure produces an interactive dashboard with test grouping by feature and story, severity filtering, step-by-step breakdown inside each test, and screenshots embedded directly in failing tests. In a team standup you can open Allure and filter to CRITICAL failures in 2 clicks. With pytest-html you're scrolling through a flat list.
+pytest-html produces a flat static file — no filtering, no trend history. Allure gives an interactive dashboard with feature/story grouping, severity filtering, step-by-step breakdown, and screenshots embedded inline in failing tests.
 
-Allure also separates raw results from the report. CI generates `allure-results/` — raw JSON files. The report is generated separately, meaning you can regenerate the report with historical data across multiple runs, showing trend graphs of pass rate over time. pytest-html shows only the current run.
-
-In CI, `allure serve` is intentionally not run — it starts a local web server and would hang the pipeline with no browser to open it. The Allure CLI generates a static HTML report which is uploaded as an artifact. Team members run `allure open allure-report/` locally. Opening `index.html` directly via `file://` protocol blocks the JavaScript Allure needs — always serve via HTTP.
+Allure separates raw results from the report. CI generates `allure-results/` (raw JSON). Reports are generated separately and can show trend history across runs. `allure serve` is not run in CI — it starts a web server with no browser to open it. Instead the Allure CLI generates a static report artifact. Always open via `allure open` or `python3 -m http.server` — `file://` protocol blocks Allure's JavaScript.
 
 ---
 
-## 10. Why Docker?
+### Why Docker?
 
-Without Docker, "works on my machine" is a real problem. The test suite runs on Mac with Python 3.13, on GitHub Actions with Ubuntu and Python 3.13, and on a colleague's Windows machine with whatever Python version they have installed. Browser driver versions, system library versions, and Python package versions all differ.
+Without Docker, "works on my machine" is a real problem. Mac runs Python 3.13, CI runs Python 3.13 on Ubuntu, a colleague's Windows machine has whatever Python version they installed. Browser versions differ. Docker packages everything into one image — any machine with Docker runs the exact same environment.
 
-Docker packages the entire test environment into a container using Microsoft's official Playwright Python base image. Any machine with Docker installed runs the exact same environment.
+Image version is pinned to `v1.58.0-noble` — not `latest`. This was learned the hard way: using `v1.51.0` while pip installed `playwright 1.58.0` caused every test to fail with a cryptic executable error. Pinning both together and upgrading deliberately prevents this mismatch.
 
-### Why pin the image version?
-
-The Dockerfile uses `mcr.microsoft.com/playwright/python:v1.58.0-noble` not `latest`. This was learned the hard way — using `v1.51.0` while pip installed `playwright 1.58.0` caused every test to fail with a cryptic "executable doesn't exist" error. The browser bundled in the image didn't match the version pip installed. Pinning both together and upgrading deliberately prevents this mismatch.
-
-### Why copy requirements.txt before the project code?
-
-Docker builds in layers. Copying `requirements.txt` first means pip install is only re-run when dependencies actually change. Source code changes only invalidate the `COPY . .` layer, keeping rebuilds fast.
+`requirements.txt` is copied before source code for Docker layer caching — pip install only re-runs when dependencies change, not on every source file change.
 
 ---
 
-## 11. Why K6 for Performance Testing?
+### Why K6 for performance testing?
 
-Functional tests verify correctness — does the API return the right data? Performance tests verify behaviour under load — does it return the right data within acceptable time when 10 users hit it simultaneously?
+K6 tests are JavaScript code — they live in the repo, go through code review, and run in CI. JMeter requires a GUI and produces XML config that's hard to review in pull requests.
 
-K6 was chosen over JMeter because tests are written as JavaScript code, not XML config files. This means performance tests live in the repo alongside functional tests, go through code review, and run in CI automatically. JMeter requires a GUI to create tests and produces XML that's hard to review in pull requests.
+K6 thresholds make performance testing meaningful — without them K6 is just a load generator. With `p(95)<400ms` as a threshold, K6 exits non-zero when breached and the CI pipeline fails automatically. Performance regressions are caught the same way functional regressions are.
 
-### Why thresholds instead of just metrics?
+`p(95)` is used over average because average hides outliers. 94 requests at 10ms and 6 at 5 seconds gives an acceptable average but 6% of users are having a terrible experience. `p(95)` means 95% of users get a response within that time.
 
-Without thresholds, K6 is just a load generator — it produces numbers but never fails. With thresholds:
-
-```javascript
-thresholds: {
-  'http_req_duration{name:get_post}': ['p(95)<400'],
-  http_req_failed: ['rate<0.01'],
-}
-```
-
-K6 exits with a non-zero code when thresholds are breached. The CI pipeline fails automatically — performance regressions are caught the same way functional regressions are. No manual checking of dashboards required.
-
-### Why p(95) and not average?
-
-Average response time hides outliers. If 94 requests complete in 10ms and 6 requests take 5 seconds, the average looks acceptable but 6% of users are having a terrible experience. p(95) means 95% of users get a response within that time — a meaningful user-experience metric.
-
-### Why ramp-up stages?
-
-Sending 10 users instantly from zero creates an unrealistic spike that can skew results. Real traffic ramps up. Stages simulate this:
-
-```javascript
-stages: [
-  { duration: "10s", target: 5 }, // ramp up
-  { duration: "20s", target: 10 }, // sustain at peak
-  { duration: "10s", target: 0 }, // ramp down
-];
-```
-
-The sustain phase gives stable results to measure against. The ramp-down prevents abrupt connection drops that can cause false failures.
-
-### How K6 mirrors functional tests
-
-K6 tests the same endpoints as pytest but asks a different question:
-
-```
-pytest: test_get_post_returns_200    → one request, assert status 200
-K6:    GET /posts/1 × 290 times     → assert status 200 AND p(95) < 400ms
-
-pytest: test_create_post_returns_201 → one request, assert status 201
-K6:    POST /posts × 299 times      → assert status 201 AND p(95) < 600ms
-```
-
-The K6 script deliberately mirrors the critical functional test paths so performance coverage tracks functional coverage.
+K6 scripts deliberately mirror the functional pytest tests — same endpoints, same assertions, different question asked at load.
 
 ---
 
-## Summary
+## 8. Summary
 
-Each decision connects to a real problem encountered either during development or anticipated from scaling experience:
-
-- **Playwright** removes driver maintenance as a source of flakes
-- **POM** prevents locator duplication across test files
-- **BasePage** standardizes behaviour across all pages automatically
-- **Factories** centralize test data so environment changes don't require updating every test file
-- **Function scope** makes parallel execution reliable
-- **Parallel execution** cuts test time in half or more
-- **Separate CI jobs** isolate failures and dependencies
-- **Environment variables** make the same tests work in dev, staging, and production
-- **Allure** gives teams an interactive dashboard with severity filtering and embedded failure evidence
-- **Docker** guarantees identical environments — no "works on my machine" failures
-- **K6 thresholds** catch performance regressions automatically in CI — not just load generation
-
-Together they form a framework that scales: new pages inherit behaviour automatically, new environments switch without code changes, new teams use shared infrastructure without reimplementing it, failures are visible and debuggable without CI access, and performance regressions are caught before users notice them.
+| Decision              | Problem solved                                             |
+| --------------------- | ---------------------------------------------------------- |
+| Playwright            | No driver maintenance, auto-waiting                        |
+| POM                   | Locators in one place, tests stay readable                 |
+| BasePage              | Shared behaviour without duplication                       |
+| Factory pattern       | Credentials in one place, tests declare intent             |
+| Function scope        | Parallel-safe browser isolation                            |
+| Parallel execution    | 30s → 13s locally, 35min → 8min at scale                   |
+| Separate CI jobs      | Failures isolated, dependencies separated                  |
+| Environment variables | Same tests across dev, staging, production                 |
+| Allure                | Interactive dashboard, embedded screenshots, trend history |
+| Docker                | Identical environment on every machine                     |
+| K6 thresholds         | Performance regressions caught automatically in CI         |
