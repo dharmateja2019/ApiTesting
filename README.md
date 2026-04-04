@@ -1,6 +1,6 @@
-# QA Automation Portfolio — Pytest + httpx + Playwright + GitHub Actions
+# QA Automation Portfolio — Pytest + httpx + Playwright + Allure + GitHub Actions
 
-A production-style test automation framework built with Python, demonstrating real-world patterns used in SDET roles at MNCs. Built progressively across 5 modules — API testing, UI automation with POM, fixture scopes, factory pattern, parallel execution, and multi-team framework design with BasePage inheritance.
+A production-style test automation framework built with Python, demonstrating real-world patterns used in SDET roles at MNCs. Built progressively across 7 modules — API testing, UI automation with POM, fixture scopes, factory pattern, parallel execution, BasePage inheritance, and Allure reporting.
 
 ## What this project covers
 
@@ -14,9 +14,10 @@ A production-style test automation framework built with Python, demonstrating re
 - Factory pattern for centralised test data management
 - Parallel test execution with `pytest-xdist`
 - Custom markers for selective test execution
-- Screenshot on failure — automatic evidence capture
+- Screenshot on failure — embedded directly in Allure report
+- Allure reporting — interactive dashboard with steps, severity, feature grouping
 - Automated CI pipeline with GitHub Actions — two parallel jobs
-- HTML test reports and failure screenshots uploaded as artifacts
+- Allure results uploaded as CI artifacts
 
 ## Tech stack
 
@@ -27,7 +28,7 @@ A production-style test automation framework built with Python, demonstrating re
 | pytest            | Test runner and assertion framework             |
 | pytest-playwright | Playwright integration for UI tests             |
 | pytest-xdist      | Parallel test execution across multiple workers |
-| pytest-html       | HTML report generation                          |
+| allure-pytest     | Allure reporting integration                    |
 | GitHub Actions    | CI pipeline — runs on every push and PR         |
 
 ## Project structure
@@ -52,16 +53,16 @@ ApiTesting/
 │   ├── test_data/
 │   │   ├── user_factory.py           # User dataclass + UserFactory
 │   │   └── product_factory.py        # Product dataclass + ProductFactory
-│   ├── screenshots/                  # auto-populated on test failure
+│   ├── screenshots/                  # auto-populated on test failure (local)
 │   └── tests/
 │       ├── conftest.py               # fixtures + screenshot_on_failure hook
-│       ├── login_test.py             # login scenarios
-│       ├── test_inventory.py         # inventory scenarios
+│       ├── login_test.py             # login scenarios with Allure steps
+│       ├── test_inventory.py         # inventory scenarios with Allure severity
 │       └── test_scope_experiments.py # fixture scope + parallel demos
 │
 └── .github/
     └── workflows/
-        └── tests.yml                 # CI pipeline — parallel jobs, artifacts
+        └── tests.yml                 # CI pipeline — parallel jobs, allure artifact
 ```
 
 ## How to run locally
@@ -100,23 +101,24 @@ pytest pom_project/tests/ -v --browser chromium -n 2
 pytest pom_project/tests/ -v --browser chromium -n auto
 ```
 
-**6. Run by marker**
+**6. Run with Allure reporting**
+
+```bash
+pytest pom_project/tests/ -v --browser chromium -n 2 --alluredir=allure-results
+allure serve allure-results
+```
+
+**7. Run by marker**
 
 ```bash
 pytest pom_project/tests/ -v --browser chromium -n auto -m "not slow"
 pytest pom_project/tests/ -v --browser chromium -m "slow"
 ```
 
-**7. Run against a different environment**
+**8. Run against a different environment**
 
 ```bash
 BASE_URL=https://staging.saucedemo.com pytest pom_project/tests/ -v --browser chromium
-```
-
-**8. Run with HTML report**
-
-```bash
-pytest pom_project/tests/ -v --browser chromium -n auto --html=ui-report.html --self-contained-html
 ```
 
 ---
@@ -167,14 +169,6 @@ def test_get_post_status(post_id, expected_status):
     ...
 ```
 
-**Schema validation** — checking response shape, not just status code:
-
-```python
-assert isinstance(data["id"], int)
-assert isinstance(data["title"], str)
-assert len(data["title"]) > 0
-```
-
 ---
 
 ## Module 2 — UI automation with Page Object Model
@@ -201,11 +195,11 @@ Tests run against [SauceDemo](https://www.saucedemo.com) — a demo e-commerce s
 
 ### POM design decisions
 
-**No assertions in page classes** — page objects describe what a page _can do_, not what _should be true_. Assertions live exclusively in test files.
+**No assertions in page classes** — page objects describe what a page _can do_, not what _should be true_.
 
-**Locators defined once** — all selectors live in the page class constructor. UI changes require updating one place, not every test.
+**Locators defined once** — UI changes require updating one place, not every test.
 
-**Fixture handles navigation** — tests don't call `navigate()` or `login()` manually:
+**Fixture handles navigation:**
 
 ```python
 @pytest.fixture(scope="function")
@@ -221,33 +215,23 @@ def inventory_page(page):
 
 ## Module 3 — Fixture scopes
 
-### The four scopes
+| Scope      | Created          | Destroyed                | Use for                            |
+| ---------- | ---------------- | ------------------------ | ---------------------------------- |
+| `function` | Before each test | After each test          | Browser, page, anything with state |
+| `module`   | Once per file    | After last test in file  | File-level shared resources        |
+| `session`  | Once per run     | After all tests finish   | Stateless HTTP clients             |
+| `class`    | Once per class   | After last test in class | OOP-heavy suites                   |
 
-| Scope      | Created          | Destroyed                | Use for                           |
-| ---------- | ---------------- | ------------------------ | --------------------------------- |
-| `function` | Before each test | After each test          | Page objects, anything with state |
-| `module`   | Once per file    | After last test in file  | File-level shared resources       |
-| `session`  | Once per run     | After all tests finish   | Stateless HTTP clients            |
-| `class`    | Once per class   | After last test in class | OOP-heavy suites                  |
-
-### Critical rule for parallel execution
-
-Session scope does not cross xdist worker process boundaries. Always use function scope for stateful resources like browser and page in parallel runs.
+Session scope does not cross xdist worker boundaries — always use function scope for browser in parallel runs.
 
 ---
 
 ## Module 4 — Factory pattern for test data
 
-### The problem
-
-Hardcoded credentials scattered across test files. One environment change = every test file to update.
-
-### The solution
-
 ```python
-user = UserFactory.standard()              # default valid user
-user = UserFactory.locked()                # locked out user
-user = UserFactory.build(password="wrong") # override only what matters
+UserFactory.standard()              # default valid user
+UserFactory.locked()                # locked out user
+UserFactory.build(password="wrong") # override only what matters
 ```
 
 Credentials defined in one place. Tests declare intent, not setup.
@@ -265,8 +249,6 @@ Credentials defined in one place. Tests declare intent, not setup.
 | `-n auto` local | 16      | ~13s |
 | `-n auto` CI    | 4       | ~12s |
 
-### Custom markers
-
 ```python
 @pytest.mark.slow
 def test_performance_glitch_user(inventory_page, page):
@@ -282,71 +264,76 @@ pytest -m "slow"               # slow tests sequentially
 
 ## Module 6 — BasePage inheritance and framework design
 
-### Core layer structure
-
-```
-core/
-├── base_page.py    # shared behaviour every page inherits
-└── config.py       # centralised environment config
-```
-
-### BasePage — shared behaviour
-
-Every page object inherits from `BasePage` and gets these for free:
-
 ```python
 class BasePage:
-    def wait_for_element(self, locator): ...   # consistent waits
-    def navigate_to(self, url: str): ...       # navigation + load state
-    def take_screenshot(self, name: str): ...  # manual screenshot
-    def get_page_title(self) -> str: ...       # page title
-    def get_current_url(self) -> str: ...      # current URL
-```
+    def wait_for_element(self, locator): ...
+    def navigate_to(self, url: str): ...
+    def take_screenshot(self, name: str): ...
+    def get_page_title(self) -> str: ...
+    def get_current_url(self) -> str: ...
 
-### Page objects inherit cleanly
-
-```python
 class LoginPage(BasePage):
     def __init__(self, page: Page):
-        super().__init__(page)   # BasePage initialised first
-        # only login-specific locators here
+        super().__init__(page)
+        # login-specific locators only
 ```
 
-### Config — environment switching without code changes
-
-```python
-class Config:
-    BASE_URL = os.getenv("BASE_URL", "https://www.saucedemo.com")
-    DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", "30000"))
-```
-
-Switch environments by changing one env variable:
+Config driven by environment variables:
 
 ```bash
 BASE_URL=https://staging.example.com pytest pom_project/tests/
 ```
 
-### Screenshot on failure
-
-Every failing test automatically captures a screenshot named after the test:
+Screenshot on failure — embedded in Allure report automatically:
 
 ```python
 @pytest.fixture(scope="function", autouse=True)
 def screenshot_on_failure(page, request):
     yield
     if request.node.rep_call.failed:
-        page.screenshot(path=f"pom_project/screenshots/{request.node.name}.png")
+        screenshot = page.screenshot()
+        allure.attach(screenshot, name=request.node.name,
+                      attachment_type=allure.attachment_type.PNG)
 ```
 
-No manual call needed in tests. Screenshots uploaded as CI artifacts for remote debugging.
+---
 
-### Why this design scales to multiple teams
+## Module 7 — Allure reporting
 
-- Core layer owns shared behaviour — teams don't reimplement waits or navigation
-- Page layer is team-specific — teams only write what's unique to their pages
-- Config is centralised — environment changes happen in one place
-- BasePage changes automatically apply to all page objects across all teams
-- Core can be versioned separately — teams pull updates without rewriting their pages
+### What Allure provides over pytest-html
+
+| Feature          | pytest-html      | Allure                              |
+| ---------------- | ---------------- | ----------------------------------- |
+| Report type      | Static HTML file | Interactive dashboard               |
+| Test grouping    | None             | By feature, story, severity         |
+| Step breakdown   | No               | Yes — per test                      |
+| Screenshot embed | Separate folder  | Inline in failing test              |
+| Trend history    | No               | Yes — across runs                   |
+| Severity filter  | No               | BLOCKER / CRITICAL / NORMAL / MINOR |
+
+### Annotations used
+
+```python
+@allure.feature("Login")
+@allure.story("Valid login")
+@allure.severity(allure.severity_level.CRITICAL)
+def test_valid_login(login_page, page):
+    with allure.step("Login with valid credentials"):
+        login_page.login(user.username, user.password)
+    with allure.step("Verify redirect to inventory"):
+        assert page.url == "..."
+```
+
+### Viewing reports
+
+**Locally:**
+
+```bash
+pytest pom_project/tests/ --alluredir=allure-results
+allure serve allure-results
+```
+
+**From CI:** Download `allure-results` artifact from Actions tab, then run `allure serve allure-results` locally. `allure serve` is not run in CI — there is no browser in a GitHub Actions runner.
 
 ---
 
@@ -366,19 +353,19 @@ Two jobs run in parallel on every push to `main` and every pull request.
 
 1. Checkout code
 2. Set up Python 3.13
-3. Install UI dependencies including `pytest-xdist`
-4. Install Playwright Chromium with system dependencies (`--with-deps`)
+3. Install UI dependencies including `allure-pytest` and `pytest-xdist`
+4. Install Playwright Chromium with system dependencies
 5. Run UI tests in parallel with `-n auto`
-6. Upload `ui-report.html` as artifact
-7. Upload `failure-screenshots/` as artifact
+6. Upload `allure-results/` as artifact
 
 ### Important lessons learned
 
+- `allure serve` must not be run in CI — it starts a web server with no browser to open it
+- `allure-results/` contains raw JSON — the interactive report is generated from these locally
 - `pytest.ini` addopts must not contain Playwright flags — breaks non-Playwright jobs
-- `playwright install chromium --with-deps` required on Ubuntu — system deps not pre-installed
+- `playwright install chromium --with-deps` required on Ubuntu CI
 - All packages must be in `requirements.txt` — CI starts clean every run
-- Register custom markers in `pytest.ini` — unregistered marks warn across all parallel workers
-- `-n auto` adapts to environment — 16 workers locally, 4 workers on 2-core CI runners
+- Register custom markers in `pytest.ini` — warns across all parallel workers otherwise
 
 ---
 
@@ -390,8 +377,9 @@ Two jobs run in parallel on every push to `main` and every pull request.
 - **POM separation of concerns** — page layer owns locators and actions, test layer owns assertions
 - **BasePage inheritance** — shared behaviour defined once, inherited everywhere
 - **Factory pattern** — test data centralised, tests declare intent not setup
-- **Parallel execution** — xdist with function-scoped browsers, markers to separate fast and slow
+- **Parallel execution** — xdist with function-scoped browsers, markers for fast vs slow
 - **Environment config** — BASE_URL driven by env vars, no hardcoded URLs in test code
+- **Allure reporting** — interactive dashboard with severity filtering and embedded screenshots
 
 ---
 

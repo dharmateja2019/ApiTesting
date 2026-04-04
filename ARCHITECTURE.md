@@ -7,7 +7,8 @@ This document explains the key architectural decisions in this test automation f
 - 15 UI tests across 2 page objects, running in parallel in 13s locally
 - API tests covering status codes, schema validation, and POST scenarios
 - Single command switches between dev, staging, and prod environments
-- Every failing test automatically captures a screenshot in CI
+- Every failing test automatically captures a screenshot embedded in Allure report
+- Interactive Allure dashboard with feature grouping, severity filtering, and step breakdown
 
 ---
 
@@ -86,7 +87,7 @@ Function scope guarantees each test gets its own isolated browser regardless of 
 
 ## 6. Why Parallel Execution?
 
-Running 15 UI tests sequentially took 30 seconds. Running them with `-n 2` dropped to 15 seconds. Running with `-n auto` on a 16-core machine dropped to 13 seconds. The framework's actual suite would take 35 minutes sequentially but only 8 minutes in parallel.
+Running 15 UI tests sequentially took 30 seconds. Running them with `-n 2` dropped to 15 seconds. Running with `-n auto` on a 16-core machine dropped to 13 seconds. In a real suite with 500 tests the difference is 35 minutes versus under 8 minutes.
 
 In CI, feedback speed matters. A developer pushes code and waits for test results. 35 minutes is enough time to start another task, forget about the tests, then context-switch back. 8 minutes is long enough to grab coffee and check Slack.
 
@@ -121,6 +122,16 @@ Same test code. No commits. Just environment variables. Different teams can run 
 
 ---
 
+## 9. Why Allure Over pytest-html?
+
+pytest-html produces a static HTML file — useful but flat. One page, no filtering, no trend history. Allure produces an interactive dashboard with test grouping by feature and story, severity filtering, step-by-step breakdown inside each test, and screenshots embedded directly in failing tests. In a team standup you can open Allure and filter to CRITICAL failures in 2 clicks. With pytest-html you're scrolling through a flat list.
+
+Allure also separates raw results from the report. CI generates `allure-results/` — raw JSON files. The report is generated separately, meaning you can regenerate the report with historical data across multiple runs, showing trend graphs of pass rate over time. pytest-html shows only the current run.
+
+In CI, `allure serve` is intentionally not run — it starts a local web server and would hang the pipeline with no browser to open it. Instead raw results are uploaded as an artifact. Team members download and run `allure serve` locally, or the pipeline generates a static HTML report using the Allure CLI.
+
+---
+
 ## Summary
 
 Each decision connects to a real problem encountered either during development or anticipated from scaling experience:
@@ -133,5 +144,6 @@ Each decision connects to a real problem encountered either during development o
 - **Parallel execution** cuts test time in half or more
 - **Separate CI jobs** isolate failures and dependencies
 - **Environment variables** make the same tests work in dev, staging, and production
+- **Allure** gives teams an interactive dashboard with severity filtering and embedded failure evidence
 
-Together they form a framework that scales: new pages inherit behaviour automatically, new environments switch without code changes, new teams use shared infrastructure without reimplementing it.
+Together they form a framework that scales: new pages inherit behaviour automatically, new environments switch without code changes, new teams use shared infrastructure without reimplementing it, and failures are visible and debuggable without access to the CI machine.
