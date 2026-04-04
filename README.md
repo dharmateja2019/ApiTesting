@@ -1,19 +1,22 @@
 # QA Automation Portfolio — Pytest + httpx + Playwright + GitHub Actions
 
-A production-style test automation framework built with Python, demonstrating real-world patterns used in SDET roles at MNCs. Built progressively — API testing, UI automation with POM, fixture scopes, factory pattern, and parallel execution.
+A production-style test automation framework built with Python, demonstrating real-world patterns used in SDET roles at MNCs. Built progressively across 5 modules — API testing, UI automation with POM, fixture scopes, factory pattern, parallel execution, and multi-team framework design with BasePage inheritance.
 
 ## What this project covers
 
 - API testing with `httpx` and `pytest`
 - Parametrized test scenarios (happy path, negative cases, schema validation)
 - UI automation with Playwright and Page Object Model (POM)
+- BasePage inheritance — shared behaviour across all page objects
+- Centralised config with environment variable support
 - Multi-page object chaining (login → inventory flow)
 - Fixture scopes — function scope for browser and page in parallel runs
 - Factory pattern for centralised test data management
 - Parallel test execution with `pytest-xdist`
 - Custom markers for selective test execution
+- Screenshot on failure — automatic evidence capture
 - Automated CI pipeline with GitHub Actions — two parallel jobs
-- HTML test reports uploaded as pipeline artifacts per job
+- HTML test reports and failure screenshots uploaded as artifacts
 
 ## Tech stack
 
@@ -40,21 +43,25 @@ ApiTesting/
 │   └── test_api.py                   # API test cases
 │
 ├── pom_project/
+│   ├── core/
+│   │   ├── base_page.py              # shared behaviour — wait, navigate, screenshot, title
+│   │   └── config.py                 # centralised config — BASE_URL, timeout, headless
 │   ├── pages/
-│   │   ├── login_page.py             # login page actions and locators
-│   │   └── inventory_page.py         # inventory page actions and locators
+│   │   ├── login_page.py             # inherits BasePage
+│   │   └── inventory_page.py         # inherits BasePage
 │   ├── test_data/
 │   │   ├── user_factory.py           # User dataclass + UserFactory
 │   │   └── product_factory.py        # Product dataclass + ProductFactory
+│   ├── screenshots/                  # auto-populated on test failure
 │   └── tests/
-│       ├── conftest.py               # browser, page, login_page, inventory_page fixtures
-│       ├── login_test.py             # login scenarios using UserFactory
+│       ├── conftest.py               # fixtures + screenshot_on_failure hook
+│       ├── login_test.py             # login scenarios
 │       ├── test_inventory.py         # inventory scenarios
-│       └── test_scope_experiments.py # fixture scope + parallel execution demos
+│       └── test_scope_experiments.py # fixture scope + parallel demos
 │
 └── .github/
     └── workflows/
-        └── tests.yml                 # CI pipeline — api-tests and ui-tests in parallel
+        └── tests.yml                 # CI pipeline — parallel jobs, artifacts
 ```
 
 ## How to run locally
@@ -89,24 +96,24 @@ pytest pom_project/tests/ -v --browser chromium
 **5. Run UI tests — parallel**
 
 ```bash
-# 2 workers
 pytest pom_project/tests/ -v --browser chromium -n 2
-
-# all available CPU cores
 pytest pom_project/tests/ -v --browser chromium -n auto
 ```
 
 **6. Run by marker**
 
 ```bash
-# skip slow tests
 pytest pom_project/tests/ -v --browser chromium -n auto -m "not slow"
-
-# only slow tests, sequentially
 pytest pom_project/tests/ -v --browser chromium -m "slow"
 ```
 
-**7. Run with HTML report**
+**7. Run against a different environment**
+
+```bash
+BASE_URL=https://staging.saucedemo.com pytest pom_project/tests/ -v --browser chromium
+```
+
+**8. Run with HTML report**
 
 ```bash
 pytest pom_project/tests/ -v --browser chromium -n auto --html=ui-report.html --self-contained-html
@@ -188,6 +195,8 @@ Tests run against [SauceDemo](https://www.saucedemo.com) — a demo e-commerce s
 - Page loads exactly 6 products
 - All product names are non-empty strings
 - Adding first product updates cart badge to 1
+- Page title is correct (via BasePage)
+- Current URL contains "inventory" (via BasePage)
 - Performance glitch user eventually lands on inventory (marked `slow`)
 
 ### POM design decisions
@@ -208,8 +217,6 @@ def inventory_page(page):
     return InventoryPage(page)
 ```
 
-**Page chaining** — the same `page` object passes through multiple page objects, reflecting the real browser session.
-
 ---
 
 ## Module 3 — Fixture scopes
@@ -225,20 +232,7 @@ def inventory_page(page):
 
 ### Critical rule for parallel execution
 
-Session scope does not cross xdist worker process boundaries. A session-scoped browser shared across workers causes failures depending on worker count and test distribution — it may pass with `-n auto` and fail with `-n 2`, making it unreliable.
-
-Solution — use function scope for browser when running parallel:
-
-```python
-@pytest.fixture(scope="function")
-def browser_instance():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        yield browser
-        browser.close()
-```
-
-Each worker gets its own browser per test. Guaranteed safe regardless of worker count.
+Session scope does not cross xdist worker process boundaries. Always use function scope for stateful resources like browser and page in parallel runs.
 
 ---
 
@@ -246,58 +240,32 @@ Each worker gets its own browser per test. Guaranteed safe regardless of worker 
 
 ### The problem
 
-Hardcoded credentials scattered across 50 test files. One environment change = 50 files to update.
+Hardcoded credentials scattered across test files. One environment change = every test file to update.
 
 ### The solution
 
 ```python
-# instead of this everywhere
-login.login("standard_user", "secret_sauce")
-
-# tests declare what's different, not the whole object
-user = UserFactory.build(password="wrong_password")
-login.login(user.username, user.password)
+user = UserFactory.standard()              # default valid user
+user = UserFactory.locked()                # locked out user
+user = UserFactory.build(password="wrong") # override only what matters
 ```
 
-### Factories built
-
-**UserFactory**
-
-```python
-UserFactory.standard()              # default valid user
-UserFactory.locked()                # locked out user
-UserFactory.slow()                  # performance glitch user
-UserFactory.build(username="")      # custom — override only what matters
-```
-
-**ProductFactory**
-
-```python
-ProductFactory.first()              # default first product
-ProductFactory.build(price=9.99)    # custom price override
-```
+Credentials defined in one place. Tests declare intent, not setup.
 
 ---
 
 ## Module 5 — Parallel execution with pytest-xdist
 
-### How it works
+### Observed timing (15 tests)
 
-`pytest-xdist` spawns N worker processes and distributes tests across them. Each worker runs independently with its own browser instance.
-
-### Observed timing (13 tests, MacBook Pro)
-
-| Mode       | Workers | Time   |
-| ---------- | ------- | ------ |
-| Sequential | 1       | ~28s   |
-| `-n 2`     | 2       | 15.77s |
-| `-n auto`  | 16      | 13.16s |
-
-In a real suite with 500 tests the difference is 35 minutes → under 8 minutes.
+| Mode            | Workers | Time |
+| --------------- | ------- | ---- |
+| Sequential      | 1       | ~30s |
+| `-n 2`          | 2       | ~15s |
+| `-n auto` local | 16      | ~13s |
+| `-n auto` CI    | 4       | ~12s |
 
 ### Custom markers
-
-Tests are tagged with markers to control parallel vs sequential execution:
 
 ```python
 @pytest.mark.slow
@@ -306,24 +274,79 @@ def test_performance_glitch_user(inventory_page, page):
 ```
 
 ```bash
-# fast tests run in parallel
-pytest -n auto -m "not slow"
-
-# slow tests run sequentially to avoid resource contention
-pytest -m "slow"
+pytest -n auto -m "not slow"   # fast tests in parallel
+pytest -m "slow"               # slow tests sequentially
 ```
 
-Markers are registered in `pytest.ini` to avoid warnings:
+---
 
-```ini
-[pytest]
-markers =
-    slow: marks tests as slow running
+## Module 6 — BasePage inheritance and framework design
+
+### Core layer structure
+
+```
+core/
+├── base_page.py    # shared behaviour every page inherits
+└── config.py       # centralised environment config
 ```
 
-### Key lesson learned
+### BasePage — shared behaviour
 
-Session-scoped fixtures are not safe across xdist workers. A browser shared via session scope may pass with many workers (one test per worker = no sharing) but fail with fewer workers (multiple tests per worker = shared browser across process boundary). Always use function scope for stateful resources in parallel runs.
+Every page object inherits from `BasePage` and gets these for free:
+
+```python
+class BasePage:
+    def wait_for_element(self, locator): ...   # consistent waits
+    def navigate_to(self, url: str): ...       # navigation + load state
+    def take_screenshot(self, name: str): ...  # manual screenshot
+    def get_page_title(self) -> str: ...       # page title
+    def get_current_url(self) -> str: ...      # current URL
+```
+
+### Page objects inherit cleanly
+
+```python
+class LoginPage(BasePage):
+    def __init__(self, page: Page):
+        super().__init__(page)   # BasePage initialised first
+        # only login-specific locators here
+```
+
+### Config — environment switching without code changes
+
+```python
+class Config:
+    BASE_URL = os.getenv("BASE_URL", "https://www.saucedemo.com")
+    DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", "30000"))
+```
+
+Switch environments by changing one env variable:
+
+```bash
+BASE_URL=https://staging.example.com pytest pom_project/tests/
+```
+
+### Screenshot on failure
+
+Every failing test automatically captures a screenshot named after the test:
+
+```python
+@pytest.fixture(scope="function", autouse=True)
+def screenshot_on_failure(page, request):
+    yield
+    if request.node.rep_call.failed:
+        page.screenshot(path=f"pom_project/screenshots/{request.node.name}.png")
+```
+
+No manual call needed in tests. Screenshots uploaded as CI artifacts for remote debugging.
+
+### Why this design scales to multiple teams
+
+- Core layer owns shared behaviour — teams don't reimplement waits or navigation
+- Page layer is team-specific — teams only write what's unique to their pages
+- Config is centralised — environment changes happen in one place
+- BasePage changes automatically apply to all page objects across all teams
+- Core can be versioned separately — teams pull updates without rewriting their pages
 
 ---
 
@@ -347,13 +370,15 @@ Two jobs run in parallel on every push to `main` and every pull request.
 4. Install Playwright Chromium with system dependencies (`--with-deps`)
 5. Run UI tests in parallel with `-n auto`
 6. Upload `ui-report.html` as artifact
+7. Upload `failure-screenshots/` as artifact
 
 ### Important lessons learned
 
-- `pytest.ini` addopts must not contain Playwright-specific flags — they apply globally and break non-Playwright jobs
-- `playwright install chromium --with-deps` is required on Ubuntu CI — system browser dependencies are not pre-installed
-- All packages must be in `requirements.txt` — CI spins up a clean container every run
-- Register custom markers in `pytest.ini` — unregistered marks produce warnings across all workers in parallel runs
+- `pytest.ini` addopts must not contain Playwright flags — breaks non-Playwright jobs
+- `playwright install chromium --with-deps` required on Ubuntu — system deps not pre-installed
+- All packages must be in `requirements.txt` — CI starts clean every run
+- Register custom markers in `pytest.ini` — unregistered marks warn across all parallel workers
+- `-n auto` adapts to environment — 16 workers locally, 4 workers on 2-core CI runners
 
 ---
 
@@ -363,8 +388,10 @@ Two jobs run in parallel on every push to `main` and every pull request.
 - **Shift-left** — CI runs on every PR, not just before release
 - **Risk-based** — login and cart flows automated first as highest business impact
 - **POM separation of concerns** — page layer owns locators and actions, test layer owns assertions
+- **BasePage inheritance** — shared behaviour defined once, inherited everywhere
 - **Factory pattern** — test data centralised, tests declare intent not setup
-- **Parallel execution** — xdist with function-scoped browsers, markers to separate fast and slow tests
+- **Parallel execution** — xdist with function-scoped browsers, markers to separate fast and slow
+- **Environment config** — BASE_URL driven by env vars, no hardcoded URLs in test code
 
 ---
 
