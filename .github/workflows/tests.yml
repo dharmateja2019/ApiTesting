@@ -28,7 +28,7 @@ jobs:
 
       # 4. Run API tests (no browser needed)
       - name: Run API tests
-        run: pytest my-api-tests/test_api.py -v --html=api-report.html --self-contained-html
+        run: pytest api_tests/test_api.py -v --html=api-report.html --self-contained-html
 
       # 5. Install Playwright ONLY before UI tests
       - name: Install Playwright Chromium
@@ -39,7 +39,7 @@ jobs:
         env:
           BASE_URL: https://www.saucedemo.com
           DEFAULT_TIMEOUT: "30000"
-        run: pytest pom_project/tests/ -v -n auto --browser chromium --alluredir=allure-results
+        run: pytest ui_tests/tests/ -v -n auto --browser chromium --alluredir=allure-results
 
       - name: Upload Allure results
         uses: actions/upload-artifact@v4

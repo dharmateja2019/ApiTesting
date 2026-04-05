@@ -1,6 +1,6 @@
-from playwright.sync_api import Page
-from core.base_page import BasePage
-from core.config import Config
+from playwright.sync_api import Page 
+from ..core.base_page import BasePage
+from config.config import Config
 
 class LoginPage(BasePage):
 

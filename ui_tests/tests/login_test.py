@@ -1,5 +1,5 @@
 import allure
-from test_data.user_factory import UserFactory
+from ..test_data.user_factory import UserFactory
 
 @allure.feature("Login")
 @allure.story("Valid login")

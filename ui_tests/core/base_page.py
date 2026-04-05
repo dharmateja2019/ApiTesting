@@ -1,5 +1,5 @@
-from playwright.sync_api import Page, expect
-from core.config import Config
+from playwright.sync_api import Page 
+from config.config import Config
 
 class BasePage:
 

@@ -1,37 +1,3 @@
-# import httpx
-# import pytest
-
-# from conftest import api_client
-
-# BASE_URL = "https://jsonplaceholder.typicode.com"
-
-# # Test 1 — happy path: get a post that exists
-# def test_get_post_returns_200(api_client):
-#     response = api_client.get(f"{BASE_URL}/posts/1")
-#     assert response.status_code == 200
-
-# # Test 2 — check the response shape, not just status
-# def test_get_post_has_expected_fields(api_client):
-#     response = api_client.get(f"{BASE_URL}/posts/1")
-#     data = response.json()
-#     assert "id" in data
-#     assert "title" in data
-#     assert "body" in data
-#     assert data["id"] == 1
-
-# # Test 3 — negative case: resource that doesn't exist
-# def test_get_nonexistent_post_returns_404(api_client):
-#     response = api_client.get(f"{BASE_URL}/posts/99999")
-#     assert response.status_code == 404
-
-# # Test 4 — POST creates a resource
-# def test_create_post_returns_201(api_client):
-#     payload = {"title": "Test post", "body": "some content", "userId": 1}
-#     response = api_client.post(f"{BASE_URL}/posts", json=payload)
-#     assert response.status_code == 201
-#     data = response.json()
-#     assert data["title"] == "Test post"
-
 import pytest
 import httpx
 

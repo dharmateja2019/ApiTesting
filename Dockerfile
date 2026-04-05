@@ -7,4 +7,4 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-CMD ["pytest", "pom_project/tests/", "-v", "--browser", "chromium", "-n", "auto", "--alluredir=allure-results"]
+CMD ["pytest", "ui_tests/tests/", "-v", "--browser", "chromium", "-n", "auto", "--alluredir=allure-results"]

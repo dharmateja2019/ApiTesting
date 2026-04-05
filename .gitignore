@@ -1,2 +1,9 @@
 allure-results/
 allure-report/
+screenshots/
+__pycache__/
+*.pyc
+.pytest_cache/
+api_env/
+qa_env/
+node_modules/

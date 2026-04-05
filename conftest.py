@@ -1,8 +1,16 @@
 import pytest
 from playwright.sync_api import sync_playwright
-from pages.login_page import LoginPage
-from pages.inventory_page import InventoryPage
-from test_data.user_factory import UserFactory
+from ui_tests.pages.login_page import LoginPage
+from ui_tests.pages.inventory_page import InventoryPage
+from ui_tests.test_data.user_factory import UserFactory
+
+import pytest
+import httpx
+
+@pytest.fixture(scope="session")
+def api_client():
+    with httpx.Client(base_url="https://jsonplaceholder.typicode.com") as client:
+        yield client
 
 # session scope — one browser for the entire run
 @pytest.fixture(scope="function")
